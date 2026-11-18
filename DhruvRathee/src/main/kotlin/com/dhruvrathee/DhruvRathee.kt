@@ -8,6 +8,8 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONArray
 import org.json.JSONObject
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Dhruv Rathee — CloudStream 3 provider for the Dhruv Rathee YouTube
@@ -68,6 +70,8 @@ class DhruvRathee : MainAPI() {
         // no tab is not listed anywhere, so new categories need a tab.
         private const val YOUTUBE_COURSES_URL =
             "https://raw.githubusercontent.com/Akhilesh2412/dhruv-rathee-courses/main/youtube_courses.json"
+        // SnapAny web-client HMAC key (from its public JS bundle).
+        private const val SNAPANY_HMAC_KEY = "a5wU-SVyy5gXIyMbPQIfIz7UP7rCBp76U8Z8i-FtDMU"
         private val YOUTUBE_CATEGORIES = setOf(
             "Current Affairs", "History & Culture", "Science & Space",
             "Finance & Business", "Education", "Travel & Vlogs",
@@ -119,16 +123,6 @@ class DhruvRathee : MainAPI() {
         val thumbnail: String?,
         val videos: List<YoutubeVideo>,
     )
-
-    private suspend fun fetchIndex(): JSONObject {
-        val now = System.currentTimeMillis()
-        cachedIndex?.let { if (now - cachedIndexAt < INDEX_TTL_MS) return it }
-        val text = app.get(INDEX_URL, headers = JSON_HEADERS).text
-        val json = JSONObject(text)
-        cachedIndex = json
-        cachedIndexAt = now
-        return json
-    }
 
     private fun parseIndex(json: JSONObject): List<Course> {
         val out = ArrayList<Course>()
@@ -421,6 +415,69 @@ class DhruvRathee : MainAPI() {
     // returns null and playback falls back to the bundled YouTube
     // extractor below — a video never ends up with zero sources
     // because of this step.
+
+    // ------------------------------------------------------------------
+    // SnapAny direct link (added 2026-11-18)
+    // ------------------------------------------------------------------
+    // snapany.com/youtube-3 pastes a YouTube link and returns direct
+    // googlevideo.com URLs. Its web API is POST
+    // https://api.snapany.com/v1/extract/post with a JSON body
+    // {"link": "<watch url>"} and HMAC-signed headers (Accept-Language
+    // = locale, G-Timestamp = current ms, G-Footer = HMAC-SHA256 of
+    // link+locale+timestamp with the web client's key, X-No-Error-Toast
+    // = 1). The response lists `medias`; the video entry's
+    // `resource_url` is the combined (video+audio) MP4 — the only
+    // single-file playable link, 360p. The 1080p/4K variants are DASH
+    // video-only streams (no audio), so they are NOT returned as player
+    // links: a video-only link would play silent. The combined link
+    // expires in ~6 hours, so it is fetched fresh at play time, never
+    // stored. If SnapAny is blocked, this returns null and playback
+    // falls back to y2mate / the bundled YouTube extractor.
+    private suspend fun fetchSnapAnyCombined(videoId: String): String? {
+        return try {
+            val link = "https://www.youtube.com/watch?v=$videoId"
+            val locale = "en"
+            val ts = System.currentTimeMillis().toString()
+            val sig = hmacSha256Hex(SNAPANY_HMAC_KEY, link + locale + ts)
+            if (sig.isBlank()) return null
+            val body = app.post(
+                "https://api.snapany.com/v1/extract/post",
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Content-Type" to "application/json",
+                    "Accept-Language" to locale,
+                    "G-Timestamp" to ts,
+                    "G-Footer" to sig,
+                    "X-No-Error-Toast" to "1",
+                    "Origin" to "https://snapany.com",
+                    "Referer" to "https://snapany.com/youtube-3",
+                ),
+                data = "{\"link\":\"$link\"}",
+            ).text
+            val medias = JSONObject(body).optJSONArray("medias") ?: return null
+            for (i in 0 until medias.length()) {
+                val m = medias.optJSONObject(i) ?: continue
+                if (m.optString("media_type") != "video") continue
+                val url = m.optString("resource_url").trim()
+                if (url.isNotBlank() && url.startsWith("http")) return url
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun hmacSha256Hex(key: String, message: String): String {
+        return try {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+            mac.doFinal(message.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
     private suspend fun fetchY2mate1080p(videoId: String): String? {
         return try {
             val keyText = app.get(
@@ -493,6 +550,22 @@ class DhruvRathee : MainAPI() {
             if (isYoutube) {
                 val videoId = youtubeVideoId(videoUrl)
                 if (!videoId.isNullOrBlank()) {
+                    // SnapAny first: a fresh combined (video+audio)
+                    // direct link. Best effort only — any failure falls
+                    // through to y2mate / the extractor below.
+                    val snapAny = fetchSnapAnyCombined(videoId)
+                    if (!snapAny.isNullOrBlank()) {
+                        callback(
+                            newExtractorLink(
+                                name, "SnapAny 360p", snapAny,
+                                ExtractorLinkType.VIDEO,
+                            ) {
+                                referer = "https://snapany.com/"
+                                quality = Qualities.P360.value
+                            }
+                        )
+                        added = true
+                    }
                     val direct1080p = fetchY2mate1080p(videoId)
                     if (!direct1080p.isNullOrBlank()) {
                         callback(
