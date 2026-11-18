@@ -10,7 +10,7 @@ dependencies {
 }
 
 cloudstream {
-    description = "Dhruv Rathee YouTube channel — 25 playlists organised into topic tabs (Current Affairs, History & Culture, Science & Space, Finance & Business, Education, Travel & Vlogs). Open a playlist to see its videos and play them in CloudStream. On play, a video first tries a fresh direct link from SnapAny, then from the y2mate converter, then falls back to the YouTube extractor."
+    description = "Dhruv Rathee YouTube channel — 25 playlists organised into topic tabs (Current Affairs, History & Culture, Science & Space, Finance & Business, Education, Travel & Vlogs). Open a playlist to see its videos and play them in CloudStream. On play, a video first tries a fresh direct link from SnapAny, then falls back to the YouTube extractor."
     authors = listOf("Akhilesh2412")
 
     /**
