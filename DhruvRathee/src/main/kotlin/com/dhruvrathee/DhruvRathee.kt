@@ -21,10 +21,10 @@ import javax.crypto.spec.SecretKeySpec
  * a `category` — Current Affairs, History & Culture, Science & Space,
  * Finance & Business, Education, Travel & Vlogs — each its own home
  * page tab. Videos play through CloudStream's bundled YouTube
- * extractor, after first trying a fresh 1080p direct link from the
- * y2mate converter at play time (see fetchY2mate1080p); such links
- * expire within minutes and are blocked when opened directly, so they
- * are never stored, only fetched when the user presses play.
+ * extractor, after first trying a fresh combined (video+audio)
+ * direct link from SnapAny at play time (see fetchSnapAnyCombined);
+ * such links expire within hours, so they are never stored, only
+ * fetched when the user presses play.
  */
 class DhruvRathee : MainAPI() {
 
@@ -404,19 +404,6 @@ class DhruvRathee : MainAPI() {
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
-    // y2mate 1080p direct link (added 2026-11-18, v6)
-    // ------------------------------------------------------------------
-    // A download site's 1080p link cannot be stored: it is a short-lived
-    // tunnel URL (dl12.yt-dl.click) that expires within minutes and is
-    // blocked when opened directly, so it is fetched fresh here, at the
-    // moment the user presses play, and only for YouTube videos. The
-    // converter needs a per-video key first, then returns the direct
-    // URL for the 1080p MP4. If the converter is blocked or slow, this
-    // returns null and playback falls back to the bundled YouTube
-    // extractor below — a video never ends up with zero sources
-    // because of this step.
-
-    // ------------------------------------------------------------------
     // SnapAny direct link (added 2026-11-18)
     // ------------------------------------------------------------------
     // snapany.com/youtube-3 pastes a YouTube link and returns direct
@@ -432,7 +419,7 @@ class DhruvRathee : MainAPI() {
     // links: a video-only link would play silent. The combined link
     // expires in ~6 hours, so it is fetched fresh at play time, never
     // stored. If SnapAny is blocked, this returns null and playback
-    // falls back to y2mate / the bundled YouTube extractor.
+    // falls back to the bundled YouTube extractor.
     private suspend fun fetchSnapAnyCombined(videoId: String): String? {
         return try {
             val link = "https://www.youtube.com/watch?v=$videoId"
@@ -452,7 +439,7 @@ class DhruvRathee : MainAPI() {
                     "Origin" to "https://snapany.com",
                     "Referer" to "https://snapany.com/youtube-3",
                 ),
-                data = "{\"link\":\"$link\"}",
+                json = JSONObject().apply { put("link", link) },
             ).text
             val medias = JSONObject(body).optJSONArray("medias") ?: return null
             for (i in 0 until medias.length()) {
@@ -472,45 +459,12 @@ class DhruvRathee : MainAPI() {
             val mac = Mac.getInstance("HmacSHA256")
             mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
             mac.doFinal(message.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
+                .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
         } catch (_: Throwable) {
             ""
         }
     }
 
-    private suspend fun fetchY2mate1080p(videoId: String): String? {
-        return try {
-            val keyText = app.get(
-                "https://cnv.cx/v2/sanity/key?id=$videoId",
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Content-Type" to "application/json",
-                ),
-            ).text
-            val key = JSONObject(keyText).optString("key").trim()
-            if (key.isBlank()) return null
-            val body = app.post(
-                "https://cnv.cx/v2/converter",
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Content-Type" to "application/x-www-form-urlencoded",
-                    "Accept" to "*/*",
-                    "key" to key,
-                ),
-                data = mapOf(
-                    "link" to "https://youtu.be/$videoId",
-                    "format" to "mp4",
-                    "audioBitrate" to "128",
-                    "videoQuality" to "1080",
-                    "filenameStyle" to "pretty",
-                    "vCodec" to "h264",
-                ),
-            ).text
-            JSONObject(body).optString("url").trim().takeIf { it.isNotBlank() }
-        } catch (_: Throwable) {
-            null
-        }
-    }
 
     private fun youtubeVideoId(url: String): String? {
         // Episodes are stored as watch?v=ID; also accept youtu.be/ID.
@@ -532,9 +486,9 @@ class DhruvRathee : MainAPI() {
         // A YouTube watch page is not a playable file, so there is no
         // direct-link fallback for it — the bundled YouTube extractor
         // (via loadExtractor below) is a source, and for YouTube videos
-        // a fresh 1080p link from the y2mate converter is tried first
-        // (see fetchY2mate1080p). Download links are never stored: they
-        // expire within minutes, so they are fetched at play time.
+        // a fresh combined link from SnapAny is tried first
+        // (see fetchSnapAnyCombined). Download links are never stored:
+        // they expire within hours, so they are fetched at play time.
         val isYoutube = videoUrl.contains("youtube.com", ignoreCase = true) ||
             videoUrl.contains("youtu.be", ignoreCase = true)
         return try {
@@ -552,7 +506,7 @@ class DhruvRathee : MainAPI() {
                 if (!videoId.isNullOrBlank()) {
                     // SnapAny first: a fresh combined (video+audio)
                     // direct link. Best effort only — any failure falls
-                    // through to y2mate / the extractor below.
+                    // through to the extractor below.
                     val snapAny = fetchSnapAnyCombined(videoId)
                     if (!snapAny.isNullOrBlank()) {
                         callback(
@@ -562,19 +516,6 @@ class DhruvRathee : MainAPI() {
                             ) {
                                 referer = "https://snapany.com/"
                                 quality = Qualities.P360.value
-                            }
-                        )
-                        added = true
-                    }
-                    val direct1080p = fetchY2mate1080p(videoId)
-                    if (!direct1080p.isNullOrBlank()) {
-                        callback(
-                            newExtractorLink(
-                                name, "Y2Mate 1080p", direct1080p,
-                                ExtractorLinkType.VIDEO,
-                            ) {
-                                referer = "https://www.y2mate.in.net/"
-                                quality = Qualities.P1080.value
                             }
                         )
                         added = true
@@ -590,7 +531,7 @@ class DhruvRathee : MainAPI() {
                     added = true
                 }
             } catch (_: Throwable) {
-                // Extractor failed; `added` keeps whatever the y2mate
+                // Extractor failed; `added` keeps whatever SnapAny
                 // step (or the fallback below) produced.
             }
             if (!added && !isYoutube) {
