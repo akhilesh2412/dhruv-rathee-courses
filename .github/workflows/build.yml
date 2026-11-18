@@ -1,0 +1,106 @@
+name: Build
+
+# https://docs.github.com/en/actions/learn-about-workflows-and-actions/workflow-syntax-for-github-actions#concurrency
+concurrency:
+  group: "build"
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - '*.md'
+
+# The "Push builds" step force-pushes to the builds branch with the
+# workflow token, which is read-only by default for this repo.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+        with:
+          path: "src"
+
+      - name: Checkout builds
+        uses: actions/checkout@master
+        with:
+          ref: "builds"
+          path: "builds"
+        # First run: the builds branch does not exist yet, so this
+        # checkout fails. That is expected — the "Push builds" step
+        # below creates the branch as an orphan branch instead.
+        continue-on-error: true
+
+      - name: Clean old builds
+        run: rm -f $GITHUB_WORKSPACE/builds/*.cs3 || true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v1
+        with:
+          java-version: 17
+
+      # ubuntu-latest runners ship the Android SDK with pre-accepted
+      # licenses; install exactly the components the build needs.
+      - name: Setup Android SDK
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n 1)
+          [ -n "$SDKM" ] || { echo "cmdline-tools not found under $ANDROID_HOME"; ls -la "$ANDROID_HOME"; exit 1; }
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      # The CloudStream gradle plugin (com.lagradost.cloudstream3:gradle:local-SNAPSHOT)
+      # is not currently published on JitPack/GitHub Packages (missing JARs), so we
+      # build it from source and publish it to mavenLocal first.
+      # Pinned to a known-good commit for reproducible builds.
+      - name: Checkout CloudStream gradle plugin
+        uses: actions/checkout@master
+        with:
+          repository: "recloudstream/gradle"
+          ref: "32895aedb6366f5075cb99bbd2e6ce0a7cac325d"
+          path: "cloudstream-plugin"
+
+      - name: Publish CloudStream gradle plugin to mavenLocal
+        working-directory: cloudstream-plugin
+        run: ./gradlew publishToMavenLocal --console=plain
+
+      - name: Build Plugins
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          chmod +x gradlew
+          ./gradlew make makePluginsJson
+          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
+          cp build/plugins.json $GITHUB_WORKSPACE/builds
+
+      # The manifest the app fetches when you "Add Repository". It must be a
+      # Repository JSON (repo.json), not the plugins.json list. Regenerated
+      # from the repo-root copy with the real user/repo so forks and renames
+      # always get the correct raw URL.
+      - name: Write repo.json for builds branch
+        run: |
+          sed "s|https://raw.githubusercontent.com/[^/]\+/[^/]\+/builds/plugins.json|https://raw.githubusercontent.com/${{ github.repository }}/builds/plugins.json|" \
+            $GITHUB_WORKSPACE/src/repo.json > $GITHUB_WORKSPACE/builds/repo.json
+
+      - name: Push builds
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/builds
+          cd $GITHUB_WORKSPACE/builds
+          if [ ! -d .git ]; then
+            git init -b builds
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          # First run: no builds branch / no commit exists yet, so
+          # there is nothing to amend — create an orphan branch.
+          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+            git checkout --orphan builds
+          fi
+          git add .
+          git commit -m "Build $GITHUB_SHA" || exit 0   # do not error if nothing to commit
+          git push --force origin builds
