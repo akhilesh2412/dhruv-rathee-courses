@@ -1,0 +1,21 @@
+[
+    {
+        "fileHash": "sha256-ede44ceab5cded31708051a518e83182a101d9362e6d892e37b17a2bdd7eaffb",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/akhilesh2412/dhruv-rathee-courses",
+        "fileSize": 28095,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Akhilesh2412"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 1,
+        "internalName": "DhruvRathee",
+        "description": "Dhruv Rathee YouTube channel \u2014 25 playlists organised into topic tabs (Current Affairs, History & Culture, Science & Space, Finance & Business, Education, Travel & Vlogs). Open a playlist to see its videos and play them in CloudStream. On play, a video first tries a fresh direct link from SnapAny, then falls back to the YouTube extractor.",
+        "url": "https://raw.githubusercontent.com/akhilesh2412/dhruv-rathee-courses/builds/DhruvRathee.cs3",
+        "name": "DhruvRathee"
+    }
+]
